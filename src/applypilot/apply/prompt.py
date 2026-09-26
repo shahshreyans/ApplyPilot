@@ -439,14 +439,17 @@ def build_prompt(job: dict, tailored_resume: str,
     search_config = config.load_search_config()
     personal = profile["personal"]
 
-    # --- Resolve resume PDF path ---
+    # --- Resolve resume PDF path (tailored, else the base resume) ---
     resume_path = job.get("tailored_resume_path")
-    if not resume_path:
-        raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
-
-    src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
-    if not src_pdf.exists():
-        raise ValueError(f"Resume PDF not found: {src_pdf}")
+    src_pdf = Path(resume_path).with_suffix(".pdf").resolve() if resume_path else None
+    if not (src_pdf and src_pdf.exists()):
+        src_pdf = config.RESUME_PDF_PATH
+        if not src_pdf.exists():
+            raise ValueError(
+                f"No tailored resume for job '{job.get('title', 'unknown')}' "
+                f"and no base resume PDF at {src_pdf}"
+            )
+        logger.info("No tailored resume for '%s', using base resume", job.get("title", "unknown"))
 
     # Copy to a clean filename for upload (recruiters see the filename)
     full_name = personal["full_name"]
@@ -460,7 +463,16 @@ def build_prompt(job: dict, tailored_resume: str,
     # --- Cover letter handling ---
     cover_letter_text = cover_letter or ""
     cl_upload_path = ""
+    # Clear a previous job's cover letter so it can't be uploaded by mistake
+    (dest_dir / f"{name_slug}_Cover_Letter.pdf").unlink(missing_ok=True)
     cl_path = job.get("cover_letter_path")
+    if not (cl_path and Path(cl_path).exists()):
+        # Fall back to the user's default cover letter (.txt and/or .pdf), if any
+        default_cl = config.DEFAULT_COVER_LETTER_PATH
+        cl_path = next(
+            (str(p) for p in (default_cl.with_suffix(".txt"), default_cl.with_suffix(".pdf")) if p.exists()),
+            None,
+        )
     if cl_path and Path(cl_path).exists():
         cl_src = Path(cl_path)
         # Read text from .txt sibling (PDF is binary)
@@ -469,8 +481,14 @@ def build_prompt(job: dict, tailored_resume: str,
             cover_letter_text = cl_txt.read_text(encoding="utf-8")
         elif cl_src.suffix == ".txt":
             cover_letter_text = cl_src.read_text(encoding="utf-8")
-        # Upload must be PDF
+        # Upload must be PDF -- render one from the text if it's missing
         cl_pdf_src = cl_src.with_suffix(".pdf")
+        if not cl_pdf_src.exists() and cl_txt.exists():
+            try:
+                from applypilot.scoring.pdf import convert_to_pdf
+                convert_to_pdf(cl_txt)
+            except Exception:
+                logger.warning("Could not render cover letter PDF from %s", cl_txt, exc_info=True)
         if cl_pdf_src.exists():
             cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
             shutil.copy(str(cl_pdf_src), str(cl_upload))
