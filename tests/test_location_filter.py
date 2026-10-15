@@ -34,11 +34,34 @@ def test_us_locations_rejected(loc):
     "Remote",
     "Canada (Remote)",
     "Remote - Canada",
-    "Remote - US or Canada",
     None,
 ])
 def test_canadian_and_generic_remote_accepted(loc):
     assert location_ok(loc, load_location_filter(CANADA_CFG))
+
+
+def test_us_beats_accept_pattern():
+    assert not location_ok("Remote - US or Canada", load_location_filter(CANADA_CFG))
+
+
+NO_REMOTE_CFG = {**CANADA_CFG, "location": {**CANADA_CFG["location"], "exclude_remote": True}}
+
+
+@pytest.mark.parametrize("loc", [
+    "Remote",
+    "Anywhere",
+    "Canada (Remote)",
+    "Remote - Canada",
+    "Regina, SK (Remote)",
+    "Work from home",
+])
+def test_exclude_remote_drops_all_remote(loc):
+    assert not location_ok(loc, load_location_filter(NO_REMOTE_CFG))
+
+
+@pytest.mark.parametrize("loc", ["Regina, SK", "Regina, Saskatchewan, Canada"])
+def test_exclude_remote_keeps_onsite(loc):
+    assert location_ok(loc, load_location_filter(NO_REMOTE_CFG))
 
 
 def test_reject_patterns_win():

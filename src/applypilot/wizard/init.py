@@ -282,6 +282,7 @@ def _setup_searches() -> None:
         "",
         "location:",
         f"  exclude_us: {str(exclude_us).lower()}",
+        f"  exclude_remote: {str(distance != 0).lower()}",
         "  accept_patterns:",
         f'    - "{country}"',
     ]

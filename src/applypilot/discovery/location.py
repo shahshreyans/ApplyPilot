@@ -6,6 +6,7 @@ Reads the ``location`` block of searches.yaml:
       accept_patterns: [...]   # substrings that make a job location acceptable
       reject_patterns: [...]   # substrings that always disqualify a job
       exclude_us: true         # drop US-based jobs, including "Remote - US" ones
+      exclude_remote: true     # drop remote/anywhere/WFH jobs entirely
 
 ``exclude_us`` defaults to true whenever the top-level ``country`` is set to
 something other than the USA, so a Canadian search never keeps US postings
@@ -51,6 +52,7 @@ class LocationFilter:
     accept: list[str] = field(default_factory=list)
     reject: list[str] = field(default_factory=list)
     exclude_us: bool = False
+    exclude_remote: bool = False
 
 
 def _is_usa(country: str | None) -> bool:
@@ -76,7 +78,12 @@ def load_location_filter(search_cfg: dict | None) -> LocationFilter:
     if exclude_us is None:
         exclude_us = bool(country) and not _is_usa(country)
 
-    return LocationFilter(accept=accept, reject=reject, exclude_us=bool(exclude_us))
+    return LocationFilter(
+        accept=accept,
+        reject=reject,
+        exclude_us=bool(exclude_us),
+        exclude_remote=bool(block.get("exclude_remote", False)),
+    )
 
 
 def looks_like_us(location: str | None) -> bool:
@@ -107,26 +114,27 @@ def looks_like_us(location: str | None) -> bool:
 def location_ok(location: str | None, filt: LocationFilter) -> bool:
     """Return True if a job location passes the user's location filter.
 
-    Order: reject patterns -> accept patterns -> US exclusion -> remote.
-    Unknown locations are kept so the scorer can decide.
+    Order: exclude_remote -> reject patterns -> US exclusion -> accept
+    patterns -> remote. Unknown locations are kept so the scorer can decide.
     """
     if not location:
         return True
 
     loc = location.lower()
+    is_remote = any(m in loc for m in REMOTE_MARKERS)
+
+    if filt.exclude_remote and is_remote:
+        return False
 
     for r in filt.reject:
         if r.lower() in loc:
             return False
 
+    if filt.exclude_us and looks_like_us(location):
+        return False
+
     for a in filt.accept:
         if a.lower() in loc:
             return True
 
-    if filt.exclude_us and looks_like_us(location):
-        return False
-
-    if any(m in loc for m in REMOTE_MARKERS):
-        return True
-
-    return False
+    return is_remote

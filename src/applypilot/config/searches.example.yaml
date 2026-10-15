@@ -55,19 +55,20 @@ queries:
     tier: 3
 
 # Locations to search
-# For remote jobs, search the country (not "Remote"/"Anywhere"): boards like
-# LinkedIn treat "Remote" as worldwide and return mostly US postings.
-# A "Remote" location is automatically swapped for `country` below.
+# Entries with `remote: true` are skipped while location.exclude_remote is on.
+# If you re-enable remote, search the country (not "Remote"/"Anywhere"):
+# boards like LinkedIn treat "Remote" as worldwide and return mostly US postings.
 locations:
   - location: "Regina, SK"
     remote: false
-  - location: "Canada"
-    remote: true
 
 # Location filtering -- accept/reject patterns for job location text
-# Order: reject_patterns -> accept_patterns -> exclude_us -> remote jobs kept.
+# Order: exclude_remote -> reject_patterns -> exclude_us -> accept_patterns.
 location:
-  # Drop US-based jobs, including "Remote - US" / "United States (Remote)".
+  # Drop every remote / anywhere / work-from-home job, including ones that
+  # mention Canada ("Remote - US or Canada") or no country at all ("Remote").
+  exclude_remote: true
+  # Drop US-based jobs, even if they also match an accept pattern.
   # Defaults to true whenever `country` is not the USA.
   exclude_us: true
   accept_patterns:

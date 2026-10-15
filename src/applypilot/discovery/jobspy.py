@@ -377,6 +377,12 @@ def _full_crawl(
     if locations:
         locs = [loc for loc in locs if loc.get("label") in locations]
 
+    if loc_filter.exclude_remote:
+        skipped = [loc["location"] for loc in locs if loc.get("remote")]
+        locs = [loc for loc in locs if not loc.get("remote")]
+        if skipped:
+            log.info("Skipping remote search locations (exclude_remote): %s", ", ".join(skipped))
+
     searches = []
     for q in queries:
         for loc in locs:
