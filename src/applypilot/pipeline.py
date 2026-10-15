@@ -96,6 +96,24 @@ def _run_discover(workers: int = 1) -> dict:
         console.print(f"  [red]Smart extract error:[/red] {e}")
         stats["smartextract"] = f"error: {e}"
 
+    # Remove jobs that fail the location filter (US, remote, ...), including
+    # ones stored by earlier runs before the filter was configured.
+    try:
+        from applypilot.config import load_search_config
+        from applypilot.discovery.cleanup import purge_rejected_jobs
+        from applypilot.discovery.location import load_location_filter
+        search_cfg = load_search_config() or {}
+        loc_block = search_cfg.get("location")
+        if not isinstance(loc_block, dict) or loc_block.get("cleanup_after_discover", True):
+            deleted, kept = purge_rejected_jobs(get_connection(), load_location_filter(search_cfg))
+            console.print(f"  [cyan]Location cleanup:[/cyan] removed {deleted} jobs outside your location filter"
+                          + (f" ({kept} already-applied kept)" if kept else ""))
+            stats["cleanup"] = deleted
+    except Exception as e:
+        log.error("Location cleanup failed: %s", e)
+        console.print(f"  [red]Location cleanup error:[/red] {e}")
+        stats["cleanup"] = f"error: {e}"
+
     return stats
 
 

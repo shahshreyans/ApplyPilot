@@ -71,6 +71,9 @@ location:
   # Drop US-based jobs, even if they also match an accept pattern.
   # Defaults to true whenever `country` is not the USA.
   exclude_us: true
+  # After every discover run, delete jobs in the DB that fail this filter
+  # (jobs you already applied to are kept).
+  cleanup_after_discover: true
   accept_patterns:
     - "Regina"
     - "Saskatchewan"

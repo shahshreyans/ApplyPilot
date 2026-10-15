@@ -7,6 +7,7 @@ Reads the ``location`` block of searches.yaml:
       reject_patterns: [...]   # substrings that always disqualify a job
       exclude_us: true         # drop US-based jobs, including "Remote - US" ones
       exclude_remote: true     # drop remote/anywhere/WFH jobs entirely
+      cleanup_after_discover: true  # purge failing jobs from the DB after discover
 
 ``exclude_us`` defaults to true whenever the top-level ``country`` is set to
 something other than the USA, so a Canadian search never keeps US postings
