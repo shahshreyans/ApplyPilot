@@ -55,26 +55,31 @@ queries:
     tier: 3
 
 # Locations to search
+# For remote jobs, search the country (not "Remote"/"Anywhere"): boards like
+# LinkedIn treat "Remote" as worldwide and return mostly US postings.
+# A "Remote" location is automatically swapped for `country` below.
 locations:
   - location: "Regina, SK"
     remote: false
-  - location: "Remote"
+  - location: "Canada"
     remote: true
 
 # Location filtering -- accept/reject patterns for job location text
+# Order: reject_patterns -> accept_patterns -> exclude_us -> remote jobs kept.
 location:
+  # Drop US-based jobs, including "Remote - US" / "United States (Remote)".
+  # Defaults to true whenever `country` is not the USA.
+  exclude_us: true
   accept_patterns:
     - "Regina"
     - "Saskatchewan"
     - "Canada"
   reject_patterns:
-    - "New York "
-    - "Seattle "
     - "London, UK"
     - "India"
     - "Philippines"
 
-# Country for Indeed/LinkedIn/Google Jobs searches
+# Country for Indeed/Glassdoor searches (also used for remote searches)
 country: "Canada"
 
 # JobSpy source boards (all available options shown)

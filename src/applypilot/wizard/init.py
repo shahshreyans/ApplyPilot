@@ -242,7 +242,12 @@ def _setup_searches() -> None:
     """Generate a searches.yaml from user input."""
     console.print(Panel("[bold]Step 3: Job Search Config[/bold]\nDefine what you're looking for."))
 
-    location = Prompt.ask("Target location (e.g. 'Remote', 'Canada', 'New York, NY')", default="Remote")
+    country = Prompt.ask("Country to search in (e.g. 'Canada', 'USA', 'UK')", default="Canada")
+    location = Prompt.ask("Target location (e.g. 'Remote', 'Canada', 'Toronto, ON')", default="Remote")
+    if location.strip().lower() in ("remote", "anywhere"):
+        # "Remote" alone searches worldwide (mostly US) on LinkedIn -- pin it to the country
+        location = country
+    exclude_us = country.strip().lower() not in ("usa", "us", "united states")
     distance_str = Prompt.ask("Search radius in miles (0 for remote-only)", default="0")
     try:
         distance = int(distance_str)
@@ -269,9 +274,20 @@ def _setup_searches() -> None:
         "  hours_old: 72",
         "  results_per_site: 50",
         "",
+        f'country: "{country}"',
+        "",
         "locations:",
         f'  - location: "{location}"',
         f"    remote: {str(distance == 0).lower()}",
+        "",
+        "location:",
+        f"  exclude_us: {str(exclude_us).lower()}",
+        "  accept_patterns:",
+        f'    - "{country}"',
+    ]
+    if location != country:
+        lines.append(f'    - "{location.split(",")[0].strip()}"')
+    lines += [
         "",
         "queries:",
     ]
