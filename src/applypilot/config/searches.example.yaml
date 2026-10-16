@@ -62,7 +62,9 @@ locations:
   - location: "Regina, SK"
     remote: false
 
-# Location filtering -- accept/reject patterns for job location text
+# Location filtering -- accept/reject patterns for job location text.
+# Patterns match whole words, ignoring case ("SK" matches "Regina, SK"
+# but not "Gdansk").
 # Order: exclude_remote -> reject_patterns -> exclude_us -> accept_patterns.
 location:
   # Drop every remote / anywhere / work-from-home job, including ones that
@@ -71,6 +73,8 @@ location:
   # Drop US-based jobs, even if they also match an accept pattern.
   # Defaults to true whenever `country` is not the USA.
   exclude_us: true
+  # Drop jobs with no location at all (some Workday postings have none).
+  exclude_unknown: true
   # After every discover run, delete jobs in the DB that fail this filter
   # (jobs you already applied to are kept).
   cleanup_after_discover: true

@@ -22,7 +22,12 @@ import yaml
 from applypilot import config
 from applypilot.config import CONFIG_DIR
 from applypilot.database import get_connection, init_db
-from applypilot.discovery.location import LocationFilter, load_location_filter, location_ok
+from applypilot.discovery.location import (
+    LocationFilter,
+    load_location_filter,
+    location_from_workday_url,
+    location_ok,
+)
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +192,7 @@ def search_employer(
             break
 
         for j in postings:
-            loc = j.get("locationsText", "")
+            loc = _search_location_text(j)
             if location_filter and loc_filter is not None:
                 if not location_ok(loc, loc_filter):
                     continue
@@ -217,6 +222,24 @@ def search_employer(
     return all_jobs
 
 
+_MULTI_LOC_RE = re.compile(r"^\s*\d+\s+locations?\s*$", re.IGNORECASE)
+
+
+def _search_location_text(posting: dict) -> str:
+    """Location for a search result, falling back to the URL path.
+
+    Workday leaves locationsText empty or as "2 Locations" for many postings;
+    the primary location is still encoded in externalPath.
+    """
+    loc = (posting.get("locationsText") or "").strip()
+    if loc and not _MULTI_LOC_RE.match(loc):
+        return loc
+    from_path = location_from_workday_url(posting.get("externalPath"))
+    if from_path:
+        return f"{from_path} ({loc})" if loc else from_path
+    return loc
+
+
 # -- Fetch details -----------------------------------------------------------
 
 def _fetch_one_detail(employer: dict, job: dict) -> dict:
@@ -231,6 +254,18 @@ def _fetch_one_detail(employer: dict, job: dict) -> dict:
         job["job_req_id"] = info.get("jobReqId", "")
         job["time_type"] = info.get("timeType", "")
         job["remote_type"] = info.get("remoteType", "")
+
+        # Add the detail page's location/country so the filter can see them
+        extra = [info.get("location") or ""]
+        extra += list(info.get("additionalLocations") or [])
+        country = info.get("country")
+        if isinstance(country, dict):
+            extra.append(country.get("descriptor") or "")
+        loc = job.get("location") or ""
+        for part in extra:
+            if part and part.lower() not in loc.lower():
+                loc = f"{loc}; {part}" if loc else part
+        job["location"] = loc
 
     except Exception as e:
         job["full_description"] = ""
@@ -336,6 +371,10 @@ def _process_one(
         jobs = fetch_details(emp, jobs)
     except Exception as e:
         log.error("%s: ERROR fetching details for '%s': %s", emp["name"], search_text, e)
+
+    # Re-check with the fuller location from the detail pages
+    if location_filter and loc_filter is not None:
+        jobs = [j for j in jobs if location_ok(j.get("location"), loc_filter)]
 
     conn = get_connection()
     new, existing = store_results(conn, jobs, employers)

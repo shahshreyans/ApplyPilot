@@ -8,29 +8,45 @@ also available as scripts/check_job_locations.py.
 import logging
 import sqlite3
 
-from applypilot.discovery.location import REMOTE_MARKERS, LocationFilter, location_ok, looks_like_us
+from applypilot.discovery.location import (
+    REMOTE_MARKERS,
+    LocationFilter,
+    location_from_workday_url,
+    location_ok,
+    looks_like_us,
+    matches_pattern,
+)
 
 log = logging.getLogger(__name__)
 
 
-def rejection_reason(location: str, filt: LocationFilter) -> str:
+def rejection_reason(location: str | None, filt: LocationFilter) -> str:
     """Explain why a location fails the filter (assumes it does fail)."""
+    if not location or not location.strip():
+        return "unknown"
     loc = location.lower()
     if filt.exclude_remote and any(m in loc for m in REMOTE_MARKERS):
         return "remote"
-    if any(r.lower() in loc for r in filt.reject):
+    if any(matches_pattern(location, r) for r in filt.reject):
         return "reject pattern"
     if filt.exclude_us and looks_like_us(location):
         return "US"
     return "no accept pattern match"
 
 
+def effective_location(row: sqlite3.Row) -> str | None:
+    """Stored location, or one recovered from a Workday URL when it is blank."""
+    if row["location"]:
+        return row["location"]
+    return location_from_workday_url(row["url"]) or location_from_workday_url(row["application_url"])
+
+
 def find_rejected_jobs(conn: sqlite3.Connection, filt: LocationFilter) -> list[sqlite3.Row]:
-    """All jobs whose location fails the filter."""
+    """All jobs whose (effective) location fails the filter."""
     rows = conn.execute(
-        "SELECT url, title, location, site, discovered_at, applied_at, apply_status FROM jobs"
+        "SELECT url, application_url, title, location, site, discovered_at, applied_at, apply_status FROM jobs"
     ).fetchall()
-    return [r for r in rows if not location_ok(r["location"], filt)]
+    return [r for r in rows if not location_ok(effective_location(r), filt)]
 
 
 def _is_applied(row: sqlite3.Row) -> bool:

@@ -7,7 +7,11 @@ Reads the ``location`` block of searches.yaml:
       reject_patterns: [...]   # substrings that always disqualify a job
       exclude_us: true         # drop US-based jobs, including "Remote - US" ones
       exclude_remote: true     # drop remote/anywhere/WFH jobs entirely
+      exclude_unknown: false   # drop jobs with no location at all
       cleanup_after_discover: true  # purge failing jobs from the DB after discover
+
+Accept/reject patterns match whole words, case-insensitively ("SK" matches
+"Regina, SK" but not "Gdansk").
 
 ``exclude_us`` defaults to true whenever the top-level ``country`` is set to
 something other than the USA, so a Canadian search never keeps US postings
@@ -30,7 +34,7 @@ US_STATE_CODES = {
 
 US_STATE_NAMES = {
     "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware",
-    "district of columbia", "florida", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas",
+    "district of columbia", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas",
     "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota",
     "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
     "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
@@ -46,6 +50,7 @@ _CANADA_SIGNALS = {
 }
 
 _SPLIT_RE = re.compile(r"[,;|/()\-–—]+")
+_WORKDAY_PATH_RE = re.compile(r"/job/([^/?#]+)/[^/?#]+/?(?:[?#].*)?$")
 
 
 @dataclass
@@ -54,6 +59,7 @@ class LocationFilter:
     reject: list[str] = field(default_factory=list)
     exclude_us: bool = False
     exclude_remote: bool = False
+    exclude_unknown: bool = False
 
 
 def _is_usa(country: str | None) -> bool:
@@ -84,7 +90,13 @@ def load_location_filter(search_cfg: dict | None) -> LocationFilter:
         reject=reject,
         exclude_us=bool(exclude_us),
         exclude_remote=bool(block.get("exclude_remote", False)),
+        exclude_unknown=bool(block.get("exclude_unknown", False)),
     )
+
+
+def _words(text: str) -> str:
+    """Lowercase, punctuation/hyphens -> single spaces, padded for " word " lookups."""
+    return " " + " ".join(re.sub(r"[^a-z0-9.é]+", " ", text.lower()).split()) + " "
 
 
 def looks_like_us(location: str | None) -> bool:
@@ -94,15 +106,21 @@ def looks_like_us(location: str | None) -> bool:
 
     tokens = [t.strip() for t in _SPLIT_RE.split(location) if t.strip()]
     lowered = [t.lower() for t in tokens]
+    norm = _words(location)
+
+    canadian = any(t in _CANADA_SIGNALS for t in lowered) or any(
+        f" {name} " in norm for name in _CANADA_SIGNALS if len(name) > 2
+    )
 
     if any(t in _US_COUNTRY_NAMES or t in US_STATE_NAMES for t in lowered):
         return True
-    words = {w for t in lowered for w in t.split()}
-    if words & _US_COUNTRY_NAMES:
-        # e.g. "Remote US", "US Remote", "Anywhere in USA"
+    if any(f" {name} " in norm for name in _US_COUNTRY_NAMES):
+        # e.g. "Remote US", "US Remote", "Anywhere in USA", "United-States-of-America-Eagan"
+        return True
+    if not canadian and any(f" {name} " in norm for name in US_STATE_NAMES):
+        # e.g. "Cambridge-Massachusetts", "New York New York"
         return True
 
-    canadian = any(t in _CANADA_SIGNALS for t in lowered)
     for tok in tokens:
         if tok in US_STATE_CODES:
             # "CA" is also Canada's country code ("Toronto, ON, CA")
@@ -112,14 +130,39 @@ def looks_like_us(location: str | None) -> bool:
     return False
 
 
+def location_from_workday_url(url: str | None) -> str | None:
+    """Recover a location from a Workday job URL or externalPath.
+
+    ".../job/United-States-of-America-Eagan-Minnesota/Title_R1" ->
+    "United States of America Eagan Minnesota"; "Warsaw---Poland" ->
+    "Warsaw, Poland". Returns None when the URL has no location segment.
+    """
+    if not url:
+        return None
+    m = _WORKDAY_PATH_RE.search(url)
+    if not m:
+        return None
+    seg = m.group(1).replace("---", ", ").replace("-", " ")
+    return " ".join(seg.split()) or None
+
+
+def matches_pattern(location: str, pattern: str) -> bool:
+    """Case-insensitive whole-word match of an accept/reject pattern."""
+    pat = pattern.strip().lower()
+    if not pat:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(pat)}(?![a-z0-9])", location.lower()) is not None
+
+
 def location_ok(location: str | None, filt: LocationFilter) -> bool:
     """Return True if a job location passes the user's location filter.
 
     Order: exclude_remote -> reject patterns -> US exclusion -> accept
-    patterns -> remote. Unknown locations are kept so the scorer can decide.
+    patterns -> remote. Unknown locations are kept (so the scorer can
+    decide) unless exclude_unknown is set.
     """
-    if not location:
-        return True
+    if not location or not location.strip():
+        return not filt.exclude_unknown
 
     loc = location.lower()
     is_remote = any(m in loc for m in REMOTE_MARKERS)
@@ -127,15 +170,13 @@ def location_ok(location: str | None, filt: LocationFilter) -> bool:
     if filt.exclude_remote and is_remote:
         return False
 
-    for r in filt.reject:
-        if r.lower() in loc:
-            return False
+    if any(matches_pattern(location, r) for r in filt.reject):
+        return False
 
     if filt.exclude_us and looks_like_us(location):
         return False
 
-    for a in filt.accept:
-        if a.lower() in loc:
-            return True
+    if any(matches_pattern(location, a) for a in filt.accept):
+        return True
 
     return is_remote

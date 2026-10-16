@@ -18,7 +18,12 @@ from collections import Counter
 
 from applypilot import config
 from applypilot.database import get_connection
-from applypilot.discovery.cleanup import find_rejected_jobs, purge_rejected_jobs, rejection_reason
+from applypilot.discovery.cleanup import (
+    effective_location,
+    find_rejected_jobs,
+    purge_rejected_jobs,
+    rejection_reason,
+)
 from applypilot.discovery.location import load_location_filter
 
 
@@ -39,7 +44,7 @@ def main() -> int:
     conn = get_connection()
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     bad = find_rejected_jobs(conn, filt)
-    reasons = Counter(rejection_reason(r["location"], filt) for r in bad)
+    reasons = Counter(rejection_reason(effective_location(r), filt) for r in bad)
 
     print(f"{total} jobs in DB, {len(bad)} fail the current location filter")
     for reason, n in reasons.most_common():
@@ -48,7 +53,8 @@ def main() -> int:
 
     shown = bad if args.limit == 0 else bad[:args.limit]
     for r in shown:
-        print(f"[{rejection_reason(r['location'], filt):>8}] {r['location'] or '?':<35.35} | "
+        loc = effective_location(r)
+        print(f"[{rejection_reason(loc, filt):>8}] {loc or '?':<35.35} | "
               f"{(r['title'] or '?'):<40.40} | {r['site'] or '?'} | {(r['discovered_at'] or '')[:10]}")
     if len(shown) < len(bad):
         print(f"... and {len(bad) - len(shown)} more (use --limit 0 to see all)")

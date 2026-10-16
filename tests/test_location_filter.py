@@ -1,6 +1,12 @@
 import pytest
 
-from applypilot.discovery.location import LocationFilter, load_location_filter, location_ok, looks_like_us
+from applypilot.discovery.location import (
+    LocationFilter,
+    load_location_filter,
+    location_from_workday_url,
+    location_ok,
+    looks_like_us,
+)
 
 CANADA_CFG = {
     "country": "Canada",
@@ -91,3 +97,43 @@ def test_non_remote_unknown_city_rejected():
 @pytest.mark.parametrize("loc", ["Toronto, ON, CA", "Vancouver, BC", "Regina, Saskatchewan, Canada", "Remote"])
 def test_canadian_locations_not_flagged_as_us(loc):
     assert not looks_like_us(loc)
+
+
+@pytest.mark.parametrize("loc", [
+    "United States of America Eagan Minnesota",
+    "Cambridge Massachusetts",
+    "United States of America New York New York",
+])
+def test_us_locations_from_workday_paths(loc):
+    assert looks_like_us(loc)
+
+
+@pytest.mark.parametrize("loc", ["Canada Toronto Ontario", "SASKATOON Saskatchewan Canada", "Warsaw, Poland"])
+def test_non_us_workday_paths(loc):
+    assert not looks_like_us(loc)
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://x.wd5.myworkdayjobs.com/Site/job/United-States-of-America-Eagan-Minnesota/Eng_JR1",
+     "United States of America Eagan Minnesota"),
+    ("https://x.wd1.myworkdayjobs.com/M_tx/job/Warsaw---Poland/Software-Engineer_R19072-1", "Warsaw, Poland"),
+    ("/job/Regina-SK/Rep_2619178", "Regina SK"),
+    ("https://x.wd3.myworkdayjobs.com/Experienced-Jobs/job/Lead-Engineers_JR00128860", None),
+    (None, None),
+])
+def test_location_from_workday_url(url, expected):
+    assert location_from_workday_url(url) == expected
+
+
+def test_patterns_match_whole_words():
+    filt = LocationFilter(accept=["SK"])
+    assert location_ok("Regina, SK", filt)
+    assert location_ok("Regina SK", filt)
+    assert not location_ok("Poland, Gdansk", filt)
+    assert not location_ok("Denmark, Roskilde", filt)
+
+
+def test_exclude_unknown():
+    assert location_ok(None, LocationFilter())
+    assert not location_ok(None, LocationFilter(exclude_unknown=True))
+    assert not location_ok("  ", LocationFilter(exclude_unknown=True))
