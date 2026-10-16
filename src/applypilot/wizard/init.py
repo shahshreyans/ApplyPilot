@@ -2,6 +2,7 @@
 
 Interactive flow that creates ~/.applypilot/ with:
   - resume.txt (and optionally resume.pdf)
+  - cover_letter.pdf / cover_letter.txt (optional default cover letter)
   - profile.json
   - searches.yaml
   - .env (LLM API key)
@@ -24,9 +25,13 @@ from applypilot.config import (
     PROFILE_PATH,
     RESUME_PATH,
     RESUME_PDF_PATH,
+    DEFAULT_COVER_LETTER_PATH,
     SEARCH_CONFIG_PATH,
     ensure_dirs,
 )
+
+COVER_LETTER_TXT_PATH = DEFAULT_COVER_LETTER_PATH.with_suffix(".txt")
+COVER_LETTER_PDF_PATH = DEFAULT_COVER_LETTER_PATH.with_suffix(".pdf")
 
 console = Console()
 
@@ -72,6 +77,55 @@ def _setup_resume() -> None:
                 else:
                     console.print("[yellow]File not found, skipping plain-text copy.[/yellow]")
         break
+
+
+# ---------------------------------------------------------------------------
+# Default cover letter
+# ---------------------------------------------------------------------------
+
+def _ask_file(label: str, suffix: str) -> Path | None:
+    """Prompt for an optional file with the given suffix. Blank input skips."""
+    while True:
+        path_str = Prompt.ask(label, default="")
+        if not path_str.strip():
+            return None
+        src = Path(path_str.strip().strip('"').strip("'")).expanduser().resolve()
+        if not src.exists():
+            console.print(f"[red]File not found:[/red] {src}")
+        elif src.suffix.lower() != suffix:
+            console.print(f"[red]Unsupported format.[/red] Provide a {suffix} file.")
+        else:
+            return src
+
+
+def _setup_cover_letter() -> None:
+    """Prompt for a default cover letter (PDF + plain text) and copy into APP_DIR."""
+    console.print(Panel(
+        "[bold]Default Cover Letter (optional)[/bold]\n"
+        "Used when a job has no generated cover letter.\n"
+        "The PDF is uploaded to applications; the text version fills cover letter text boxes."
+    ))
+
+    if not Confirm.ask("Add a default cover letter?", default=True):
+        console.print("[dim]Skipped. Without one, applications are submitted with the resume only.[/dim]")
+        return
+
+    pdf_src = _ask_file("Cover letter PDF (.pdf)", ".pdf")
+    txt_src = _ask_file("Plain-text version of your cover letter (.txt)", ".txt")
+
+    if txt_src:
+        shutil.copy2(txt_src, COVER_LETTER_TXT_PATH)
+        console.print(f"[green]Copied to {COVER_LETTER_TXT_PATH}[/green]")
+    if pdf_src:
+        shutil.copy2(pdf_src, COVER_LETTER_PDF_PATH)
+        console.print(f"[green]Copied to {COVER_LETTER_PDF_PATH}[/green]")
+
+    if txt_src and not pdf_src:
+        console.print("[yellow]No PDF provided — one will be generated from the text version when applying.[/yellow]")
+    elif pdf_src and not txt_src:
+        console.print("[yellow]No text version provided — cover letter text boxes won't be filled from it.[/yellow]")
+    elif not (pdf_src or txt_src):
+        console.print("[dim]No files provided. Applications will be submitted with the resume only.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +242,12 @@ def _setup_searches() -> None:
     """Generate a searches.yaml from user input."""
     console.print(Panel("[bold]Step 3: Job Search Config[/bold]\nDefine what you're looking for."))
 
-    location = Prompt.ask("Target location (e.g. 'Remote', 'Canada', 'New York, NY')", default="Remote")
+    country = Prompt.ask("Country to search in (e.g. 'Canada', 'USA', 'UK')", default="Canada")
+    location = Prompt.ask("Target location (e.g. 'Remote', 'Canada', 'Toronto, ON')", default="Remote")
+    if location.strip().lower() in ("remote", "anywhere"):
+        # "Remote" alone searches worldwide (mostly US) on LinkedIn -- pin it to the country
+        location = country
+    exclude_us = country.strip().lower() not in ("usa", "us", "united states")
     distance_str = Prompt.ask("Search radius in miles (0 for remote-only)", default="0")
     try:
         distance = int(distance_str)
@@ -215,9 +274,21 @@ def _setup_searches() -> None:
         "  hours_old: 72",
         "  results_per_site: 50",
         "",
+        f'country: "{country}"',
+        "",
         "locations:",
         f'  - location: "{location}"',
         f"    remote: {str(distance == 0).lower()}",
+        "",
+        "location:",
+        f"  exclude_us: {str(exclude_us).lower()}",
+        f"  exclude_remote: {str(distance != 0).lower()}",
+        "  accept_patterns:",
+        f'    - "{country}"',
+    ]
+    if location != country:
+        lines.append(f'    - "{location.split(",")[0].strip()}"')
+    lines += [
         "",
         "queries:",
     ]
@@ -227,6 +298,31 @@ def _setup_searches() -> None:
 
     SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Resume keywords
+# ---------------------------------------------------------------------------
+
+def _setup_resume_keywords() -> None:
+    """Extract skills/keywords/titles from resume.txt into profile.json (needs an LLM)."""
+    from applypilot.config import get_tier
+    from applypilot.profile_keywords import ensure_profile_keywords
+
+    if get_tier() < 2:
+        console.print("[dim]Resume keywords: skipped (no LLM configured). "
+                      "They are extracted automatically once AI is set up.[/dim]\n")
+        return
+    console.print("[cyan]Extracting skills and keywords from your resume...[/cyan]")
+    kw = ensure_profile_keywords(force=True)
+    if not kw:
+        console.print("[yellow]Could not extract resume keywords. They will be retried on the next scoring run.[/yellow]\n")
+        return
+    n_skills = sum(len(v) for v in kw["skills"].values())
+    console.print(f"[green]Saved {n_skills} skills and {len(kw['keywords'])} keywords to {PROFILE_PATH}[/green]")
+    if kw["job_titles"]:
+        console.print(f"[dim]Suggested job titles: {', '.join(kw['job_titles'])}[/dim]")
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -340,8 +436,10 @@ def run_wizard() -> None:
     ensure_dirs()
     console.print(f"[dim]Created {APP_DIR}[/dim]\n")
 
-    # Step 1: Resume
+    # Step 1: Resume (+ optional default cover letter)
     _setup_resume()
+    console.print()
+    _setup_cover_letter()
     console.print()
 
     # Step 2: Profile
@@ -359,6 +457,9 @@ def run_wizard() -> None:
     # Step 5: Auto-apply (Claude Code detection)
     _setup_auto_apply()
     console.print()
+
+    # Pull skills, keywords and fitting job titles out of the resume into profile.json
+    _setup_resume_keywords()
 
     # Done — show tier status
     from applypilot.config import get_tier, TIER_LABELS, TIER_COMMANDS

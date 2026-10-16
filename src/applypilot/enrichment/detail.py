@@ -25,6 +25,13 @@ from playwright.sync_api import sync_playwright
 from applypilot import config
 from applypilot.config import DB_PATH
 from applypilot.database import get_connection, init_db, ensure_columns
+from applypilot.enrichment.summary import (
+    SUMMARY_RULES,
+    SUMMARY_SCHEMA,
+    load_summary_settings,
+    normalize_summary,
+    save_summary,
+)
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -374,17 +381,20 @@ DETAIL_EXTRACT_PROMPT = """You are extracting job details from a single job post
 PAGE URL: {url}
 PAGE TITLE: {title}
 
-Find TWO things in the HTML below:
+Find THREE things in the HTML below:
 1. The full job description text (responsibilities, requirements, etc.)
 2. The URL of the "Apply" button/link
+3. A structured summary of the job's requirements (for resume matching)
 
 Rules:
 - For description: extract the FULL text. Include all sections (About, Responsibilities, Requirements, etc.)
 - For apply URL: find the href of the link/button that starts the application process
 - If you cannot find one, set it to null
+- For summary, use this shape: {summary_schema}
+{summary_rules}
 
 Return ONLY valid JSON:
-{{"full_description": "the complete job description text here", "application_url": "https://..." or null}}
+{{"full_description": "the complete job description text here", "application_url": "https://..." or null, "summary": {{...}} or null}}
 
 No explanation, no markdown. Keep reasoning under 20 words.
 
@@ -460,6 +470,8 @@ def extract_with_llm(page, url: str) -> dict:
         url=url,
         title=title,
         content=content[:30000],
+        summary_schema=SUMMARY_SCHEMA,
+        summary_rules=SUMMARY_RULES,
     )
 
     try:
@@ -477,7 +489,11 @@ def extract_with_llm(page, url: str) -> dict:
         if desc:
             desc = clean_description(desc)
 
-        return {"full_description": desc, "application_url": apply_url}
+        return {
+            "full_description": desc,
+            "application_url": apply_url,
+            "job_summary": normalize_summary(result.get("summary")),
+        }
     except Exception as e:
         log.error("LLM ERROR: %s", e)
         return {"full_description": None, "application_url": None}
@@ -591,6 +607,7 @@ def scrape_detail_page(page, url: str) -> dict:
     # Tier 3: LLM
     llm_result = extract_with_llm(page, url)
     result["full_description"] = llm_result.get("full_description")
+    result["job_summary"] = llm_result.get("job_summary")
     result["application_url"] = llm_result.get("application_url") or tier2_apply
     result["tier_used"] = 3
 
@@ -630,6 +647,7 @@ def scrape_site_batch(
         conn = init_db()
 
     now = datetime.now(timezone.utc).isoformat()
+    summary_settings = load_summary_settings()
 
     try:
         with sync_playwright() as p:
@@ -668,6 +686,10 @@ def scrape_site_batch(
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
                         (result.get("full_description"), result.get("application_url"), now, url),
                     )
+                    # The LLM tier returns a summary in the same call -- keep it
+                    if result.get("job_summary"):
+                        save_summary(conn, url, result["job_summary"],
+                                     store_full_description=summary_settings["store_full_description"])
                 else:
                     stats["error"] += 1
                     conn.execute(

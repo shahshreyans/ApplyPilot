@@ -140,6 +140,11 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     return conn
 
 
+# A job is ready for scoring once it has job text: the full description, or
+# its extracted summary when job_summary.store_full_description is false.
+HAS_JOB_TEXT = "(full_description IS NOT NULL OR job_summary IS NOT NULL)"
+
+
 # Complete column registry: column_name -> SQL type with optional default.
 # This is the single source of truth. Adding a column here is all that's needed
 # for it to appear in both new databases and migrated ones.
@@ -158,6 +163,10 @@ _ALL_COLUMNS: dict[str, str] = {
     "application_url": "TEXT",
     "detail_scraped_at": "TEXT",
     "detail_error": "TEXT",
+    # Job summary (keywords extracted from the description)
+    "job_summary": "TEXT",
+    "summary_at": "TEXT",
+    "summary_error": "TEXT",
     # Scoring
     "fit_score": "INTEGER",
     "score_reasoning": "TEXT",
@@ -254,7 +263,7 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     ).fetchone()[0]
 
     stats["with_description"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL"
+        f"SELECT COUNT(*) FROM jobs WHERE {HAS_JOB_TEXT}"
     ).fetchone()[0]
 
     stats["detail_errors"] = conn.execute(
@@ -268,7 +277,7 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     stats["unscored"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL AND fit_score IS NULL"
+        f"WHERE {HAS_JOB_TEXT} AND fit_score IS NULL"
     ).fetchone()[0]
 
     # Score distribution
@@ -286,7 +295,7 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     stats["untailored_eligible"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE fit_score >= 7 AND full_description IS NOT NULL "
+        f"WHERE fit_score >= 7 AND {HAS_JOB_TEXT} "
         "AND tailored_resume_path IS NULL"
     ).fetchone()[0]
 
@@ -383,11 +392,11 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
     conditions = {
         "discovered": "1=1",
         "pending_detail": "detail_scraped_at IS NULL",
-        "enriched": "full_description IS NOT NULL",
-        "pending_score": "full_description IS NOT NULL AND fit_score IS NULL",
+        "enriched": HAS_JOB_TEXT,
+        "pending_score": f"{HAS_JOB_TEXT} AND fit_score IS NULL",
         "scored": "fit_score IS NOT NULL",
         "pending_tailor": (
-            "fit_score >= ? AND full_description IS NOT NULL "
+            f"fit_score >= ? AND {HAS_JOB_TEXT} "
             "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
         ),
         "tailored": "tailored_resume_path IS NOT NULL",

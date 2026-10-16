@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from applypilot.config import load_env, ensure_dirs
-from applypilot.database import init_db, get_connection, get_stats
+from applypilot.database import HAS_JOB_TEXT, init_db, get_connection, get_stats
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -61,40 +61,73 @@ _UPSTREAM: dict[str, str | None] = {
 
 def _run_discover(workers: int = 1) -> dict:
     """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
+    from applypilot.config import load_search_config
+
     stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    search_cfg = load_search_config() or {}
+
+    # Per-source on/off switches: `discovery: {jobspy: true, workday: true, smartextract: false}`
+    sources = search_cfg.get("discovery")
+    sources = sources if isinstance(sources, dict) else {}
+
+    def _enabled(name: str) -> bool:
+        if sources.get(name, True):
+            return True
+        console.print(f"  [dim]{name}: disabled in searches.yaml (discovery.{name}: false)[/dim]")
+        stats[name] = "disabled"
+        return False
 
     # JobSpy
-    console.print("  [cyan]JobSpy full crawl...[/cyan]")
-    try:
-        from applypilot.discovery.jobspy import run_discovery
-        run_discovery()
-        stats["jobspy"] = "ok"
-    except Exception as e:
-        log.error("JobSpy crawl failed: %s", e)
-        console.print(f"  [red]JobSpy error:[/red] {e}")
-        stats["jobspy"] = f"error: {e}"
+    if _enabled("jobspy"):
+        console.print("  [cyan]JobSpy full crawl...[/cyan]")
+        try:
+            from applypilot.discovery.jobspy import run_discovery
+            run_discovery()
+            stats["jobspy"] = "ok"
+        except Exception as e:
+            log.error("JobSpy crawl failed: %s", e)
+            console.print(f"  [red]JobSpy error:[/red] {e}")
+            stats["jobspy"] = f"error: {e}"
 
     # Workday corporate scraper
-    console.print("  [cyan]Workday corporate scraper...[/cyan]")
-    try:
-        from applypilot.discovery.workday import run_workday_discovery
-        run_workday_discovery(workers=workers)
-        stats["workday"] = "ok"
-    except Exception as e:
-        log.error("Workday scraper failed: %s", e)
-        console.print(f"  [red]Workday error:[/red] {e}")
-        stats["workday"] = f"error: {e}"
+    if _enabled("workday"):
+        console.print("  [cyan]Workday corporate scraper...[/cyan]")
+        try:
+            from applypilot.discovery.workday import run_workday_discovery
+            run_workday_discovery(workers=workers)
+            stats["workday"] = "ok"
+        except Exception as e:
+            log.error("Workday scraper failed: %s", e)
+            console.print(f"  [red]Workday error:[/red] {e}")
+            stats["workday"] = f"error: {e}"
 
     # Smart extract
-    console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
+    if _enabled("smartextract"):
+        console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
+        try:
+            from applypilot.discovery.smartextract import run_smart_extract
+            run_smart_extract(workers=workers)
+            stats["smartextract"] = "ok"
+        except Exception as e:
+            log.error("Smart extract failed: %s", e)
+            console.print(f"  [red]Smart extract error:[/red] {e}")
+            stats["smartextract"] = f"error: {e}"
+
+    # Remove jobs that fail the location filter (US, remote, ...), including
+    # ones stored by earlier runs before the filter was configured.
     try:
-        from applypilot.discovery.smartextract import run_smart_extract
-        run_smart_extract(workers=workers)
-        stats["smartextract"] = "ok"
+        from applypilot.discovery.cleanup import purge_rejected_jobs
+        from applypilot.discovery.location import load_location_filter
+        loc_block = search_cfg.get("location")
+        if not isinstance(loc_block, dict) or loc_block.get("cleanup_after_discover", True):
+            deleted, kept = purge_rejected_jobs(get_connection(), load_location_filter(search_cfg))
+            console.print(f"  [cyan]Location cleanup:[/cyan] removed {deleted} jobs outside your location filter"
+                          + (f" ({kept} already-applied kept)" if kept else ""))
+            stats["cleanup"] = deleted
     except Exception as e:
-        log.error("Smart extract failed: %s", e)
-        console.print(f"  [red]Smart extract error:[/red] {e}")
-        stats["smartextract"] = f"error: {e}"
+        log.error("Location cleanup failed: %s", e)
+        console.print(f"  [red]Location cleanup error:[/red] {e}")
+        stats["cleanup"] = f"error: {e}"
 
     return stats
 
@@ -104,10 +137,24 @@ def _run_enrich(workers: int = 1) -> dict:
     try:
         from applypilot.enrichment.detail import run_enrichment
         run_enrichment(workers=workers)
-        return {"status": "ok"}
     except Exception as e:
         log.error("Enrichment failed: %s", e)
         return {"status": f"error: {e}"}
+
+    # Extract keyword summaries for jobs that passed the filters (one LLM call per job;
+    # jobs enriched by the LLM tier already got theirs in the same call)
+    result: dict = {"status": "ok"}
+    try:
+        from applypilot.config import get_tier
+        from applypilot.enrichment.summary import run_job_summaries
+        if get_tier() >= 2:
+            result["summaries"] = run_job_summaries()
+        else:
+            console.print("  [dim]Job summaries skipped: no LLM configured[/dim]")
+    except Exception as e:
+        log.error("Job summaries failed: %s", e)
+        result["summaries"] = f"error: {e}"
+    return result
 
 
 def _run_score() -> dict:
@@ -222,10 +269,10 @@ class _StageTracker:
 # SQL to count pending work for each stage
 _PENDING_SQL: dict[str, str] = {
     "enrich": "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL",
-    "score":  "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL AND fit_score IS NULL",
+    "score":  f"SELECT COUNT(*) FROM jobs WHERE {HAS_JOB_TEXT} AND fit_score IS NULL",
     "tailor": (
         "SELECT COUNT(*) FROM jobs WHERE fit_score >= ? "
-        "AND full_description IS NOT NULL "
+        f"AND {HAS_JOB_TEXT} "
         "AND tailored_resume_path IS NULL "
         "AND COALESCE(tailor_attempts, 0) < 5"
     ),

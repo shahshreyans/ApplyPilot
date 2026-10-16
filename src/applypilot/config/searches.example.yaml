@@ -55,48 +55,75 @@ queries:
     tier: 3
 
 # Locations to search
+# Entries with `remote: true` are skipped while location.exclude_remote is on.
+# If you re-enable remote, search the country (not "Remote"/"Anywhere"):
+# boards like LinkedIn treat "Remote" as worldwide and return mostly US postings.
 locations:
-  - location: "San Francisco, CA"
+  - location: "Regina, SK"
     remote: false
-  - location: "Remote"
-    remote: true
 
-# Location filtering -- accept/reject patterns for job location text
+# Location filtering -- accept/reject patterns for job location text.
+# Patterns match whole words, ignoring case ("SK" matches "Regina, SK"
+# but not "Gdansk").
+# Order: exclude_remote -> reject_patterns -> exclude_us -> accept_patterns.
 location:
+  # Drop every remote / anywhere / work-from-home job, including ones that
+  # mention Canada ("Remote - US or Canada") or no country at all ("Remote").
+  exclude_remote: true
+  # Drop US-based jobs, even if they also match an accept pattern.
+  # Defaults to true whenever `country` is not the USA.
+  exclude_us: true
+  # Drop jobs with no location at all (some Workday postings have none).
+  exclude_unknown: true
+  # After every discover run, delete jobs in the DB that fail this filter
+  # (jobs you already applied to are kept).
+  cleanup_after_discover: true
   accept_patterns:
-    - "San Francisco"
-    - "Bay Area"
-    - "SF"
-    - "California"
-    - "CA"
-    - "Remote"
-    - "Anywhere"
-    - "United States"
-    - "US"
-    - "USA"
+    - "Regina"
+    - "Saskatchewan"
+    - "Canada"
   reject_patterns:
-    - "New York only"
-    - "Seattle only"
-    - "onsite only"
     - "London, UK"
     - "India"
     - "Philippines"
 
-# Country for Indeed/LinkedIn/Google Jobs searches
-country: "USA"
+# Country for Indeed/Glassdoor searches (also used for remote searches)
+country: "Canada"
+
+# Discovery sources -- set any to false to skip it during `applypilot run discover`
+discovery:
+  jobspy: true        # Indeed / LinkedIn / Glassdoor / Google (boards below)
+  workday: true       # Company career sites from employers.yaml
+  smartextract: true  # AI-powered scraping of sites.yaml (uses LLM calls)
+  # Also search for the job titles extracted from your resume (profile.json ->
+  # resume_keywords.job_titles), added as tier-3 queries
+  use_profile_titles: false
+
+# Job summaries -- during `enrich`, each job description is turned into a small
+# keyword summary (required skills, experience, responsibilities, ATS keywords).
+# Scoring, tailoring and cover letters send the summary to the LLM instead of
+# the full description (much smaller prompts).
+job_summary:
+  enabled: true
+  store_full_description: true   # false = delete the full text once summarized
+
+# Scoring
+scoring:
+  # Score jobs 1 without an LLM call when fewer than this many of their required
+  # skills match your skills (profile skills + resume keywords). 0 = off.
+  min_skill_match: 0
 
 # JobSpy source boards (all available options shown)
 boards:
   - indeed
   - linkedin
   - glassdoor
-  - zip_recruiter
   - google
 
 # Search defaults
 defaults:
   results_per_site: 100  # Max results per board per query
-  hours_old: 72          # Only jobs posted within this many hours
+  hours_old: 24          # Only jobs posted within this many hours
 
 # Negative keywords -- skip jobs with these in the title (case-insensitive)
 exclude_titles:

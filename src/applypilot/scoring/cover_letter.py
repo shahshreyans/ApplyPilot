@@ -12,7 +12,8 @@ import time
 from datetime import datetime, timezone
 
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.database import HAS_JOB_TEXT, get_connection, get_jobs_by_stage
+from applypilot.enrichment.summary import job_context
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
@@ -136,12 +137,7 @@ def generate_cover_letter(
     Returns:
         The cover letter text (best attempt even if validation failed).
     """
-    job_text = (
-        f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
-        f"LOCATION: {job.get('location', 'N/A')}\n\n"
-        f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
-    )
+    job_text = job_context(job)
 
     avoid_notes: list[str] = []
     letter = ""
@@ -205,7 +201,7 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     jobs = conn.execute(
         "SELECT * FROM jobs "
         "WHERE fit_score >= ? AND tailored_resume_path IS NOT NULL "
-        "AND full_description IS NOT NULL "
+        f"AND {HAS_JOB_TEXT} "
         "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
         "AND COALESCE(cover_attempts, 0) < ? "
         "ORDER BY fit_score DESC LIMIT ?",

@@ -110,8 +110,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                  AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
         else:
@@ -210,6 +209,17 @@ def release_lock(url: str) -> None:
 # Utility modes (--gen, --mark-applied, --mark-failed, --reset-failed)
 # ---------------------------------------------------------------------------
 
+def _load_resume_text(job: dict) -> str:
+    """Tailored resume text for the job, falling back to the base resume."""
+    resume_path = job.get("tailored_resume_path")
+    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
+    if txt_path and txt_path.exists():
+        return txt_path.read_text(encoding="utf-8")
+    if config.RESUME_PATH.exists():
+        return config.RESUME_PATH.read_text(encoding="utf-8")
+    return ""
+
+
 def gen_prompt(target_url: str, min_score: int = 7,
                model: str = "sonnet", worker_id: int = 0) -> Path | None:
     """Generate a prompt file and print the Claude CLI command for manual debugging.
@@ -221,14 +231,7 @@ def gen_prompt(target_url: str, min_score: int = 7,
     if not job:
         return None
 
-    # Read resume text
-    resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
-    resume_text = ""
-    if txt_path and txt_path.exists():
-        resume_text = txt_path.read_text(encoding="utf-8")
-
-    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
+    prompt = prompt_mod.build_prompt(job=job, tailored_resume=_load_resume_text(job))
 
     # Release the lock so the job stays available
     release_lock(job["url"])
@@ -303,17 +306,10 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         'applied', 'expired', 'captcha', 'login_issue',
         'failed:reason', or 'skipped'.
     """
-    # Read tailored resume text
-    resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
-    resume_text = ""
-    if txt_path and txt_path.exists():
-        resume_text = txt_path.read_text(encoding="utf-8")
-
     # Build the prompt
     agent_prompt = prompt_mod.build_prompt(
         job=job,
-        tailored_resume=resume_text,
+        tailored_resume=_load_resume_text(job),
         dry_run=dry_run,
     )
 
