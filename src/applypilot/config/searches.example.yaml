@@ -90,6 +90,12 @@ location:
 # Country for Indeed/Glassdoor searches (also used for remote searches)
 country: "Canada"
 
+# Discovery sources -- set any to false to skip it during `applypilot run discover`
+discovery:
+  jobspy: true        # Indeed / LinkedIn / Glassdoor / Google (boards below)
+  workday: true       # Company career sites from employers.yaml
+  smartextract: true  # AI-powered scraping of sites.yaml (uses LLM calls)
+
 # JobSpy source boards (all available options shown)
 boards:
   - indeed

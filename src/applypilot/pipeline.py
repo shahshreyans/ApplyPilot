@@ -61,48 +61,63 @@ _UPSTREAM: dict[str, str | None] = {
 
 def _run_discover(workers: int = 1) -> dict:
     """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
+    from applypilot.config import load_search_config
+
     stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    search_cfg = load_search_config() or {}
+
+    # Per-source on/off switches: `discovery: {jobspy: true, workday: true, smartextract: false}`
+    sources = search_cfg.get("discovery")
+    sources = sources if isinstance(sources, dict) else {}
+
+    def _enabled(name: str) -> bool:
+        if sources.get(name, True):
+            return True
+        console.print(f"  [dim]{name}: disabled in searches.yaml (discovery.{name}: false)[/dim]")
+        stats[name] = "disabled"
+        return False
 
     # JobSpy
-    console.print("  [cyan]JobSpy full crawl...[/cyan]")
-    try:
-        from applypilot.discovery.jobspy import run_discovery
-        run_discovery()
-        stats["jobspy"] = "ok"
-    except Exception as e:
-        log.error("JobSpy crawl failed: %s", e)
-        console.print(f"  [red]JobSpy error:[/red] {e}")
-        stats["jobspy"] = f"error: {e}"
+    if _enabled("jobspy"):
+        console.print("  [cyan]JobSpy full crawl...[/cyan]")
+        try:
+            from applypilot.discovery.jobspy import run_discovery
+            run_discovery()
+            stats["jobspy"] = "ok"
+        except Exception as e:
+            log.error("JobSpy crawl failed: %s", e)
+            console.print(f"  [red]JobSpy error:[/red] {e}")
+            stats["jobspy"] = f"error: {e}"
 
     # Workday corporate scraper
-    console.print("  [cyan]Workday corporate scraper...[/cyan]")
-    try:
-        from applypilot.discovery.workday import run_workday_discovery
-        run_workday_discovery(workers=workers)
-        stats["workday"] = "ok"
-    except Exception as e:
-        log.error("Workday scraper failed: %s", e)
-        console.print(f"  [red]Workday error:[/red] {e}")
-        stats["workday"] = f"error: {e}"
+    if _enabled("workday"):
+        console.print("  [cyan]Workday corporate scraper...[/cyan]")
+        try:
+            from applypilot.discovery.workday import run_workday_discovery
+            run_workday_discovery(workers=workers)
+            stats["workday"] = "ok"
+        except Exception as e:
+            log.error("Workday scraper failed: %s", e)
+            console.print(f"  [red]Workday error:[/red] {e}")
+            stats["workday"] = f"error: {e}"
 
     # Smart extract
-    console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
-    try:
-        from applypilot.discovery.smartextract import run_smart_extract
-        run_smart_extract(workers=workers)
-        stats["smartextract"] = "ok"
-    except Exception as e:
-        log.error("Smart extract failed: %s", e)
-        console.print(f"  [red]Smart extract error:[/red] {e}")
-        stats["smartextract"] = f"error: {e}"
+    if _enabled("smartextract"):
+        console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
+        try:
+            from applypilot.discovery.smartextract import run_smart_extract
+            run_smart_extract(workers=workers)
+            stats["smartextract"] = "ok"
+        except Exception as e:
+            log.error("Smart extract failed: %s", e)
+            console.print(f"  [red]Smart extract error:[/red] {e}")
+            stats["smartextract"] = f"error: {e}"
 
     # Remove jobs that fail the location filter (US, remote, ...), including
     # ones stored by earlier runs before the filter was configured.
     try:
-        from applypilot.config import load_search_config
         from applypilot.discovery.cleanup import purge_rejected_jobs
         from applypilot.discovery.location import load_location_filter
-        search_cfg = load_search_config() or {}
         loc_block = search_cfg.get("location")
         if not isinstance(loc_block, dict) or loc_block.get("cleanup_after_discover", True):
             deleted, kept = purge_rejected_jobs(get_connection(), load_location_filter(search_cfg))
