@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from applypilot.config import load_env, ensure_dirs
-from applypilot.database import init_db, get_connection, get_stats
+from applypilot.database import HAS_JOB_TEXT, init_db, get_connection, get_stats
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -137,10 +137,24 @@ def _run_enrich(workers: int = 1) -> dict:
     try:
         from applypilot.enrichment.detail import run_enrichment
         run_enrichment(workers=workers)
-        return {"status": "ok"}
     except Exception as e:
         log.error("Enrichment failed: %s", e)
         return {"status": f"error: {e}"}
+
+    # Extract keyword summaries for jobs that passed the filters (one LLM call per job;
+    # jobs enriched by the LLM tier already got theirs in the same call)
+    result: dict = {"status": "ok"}
+    try:
+        from applypilot.config import get_tier
+        from applypilot.enrichment.summary import run_job_summaries
+        if get_tier() >= 2:
+            result["summaries"] = run_job_summaries()
+        else:
+            console.print("  [dim]Job summaries skipped: no LLM configured[/dim]")
+    except Exception as e:
+        log.error("Job summaries failed: %s", e)
+        result["summaries"] = f"error: {e}"
+    return result
 
 
 def _run_score() -> dict:
@@ -255,10 +269,10 @@ class _StageTracker:
 # SQL to count pending work for each stage
 _PENDING_SQL: dict[str, str] = {
     "enrich": "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL",
-    "score":  "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL AND fit_score IS NULL",
+    "score":  f"SELECT COUNT(*) FROM jobs WHERE {HAS_JOB_TEXT} AND fit_score IS NULL",
     "tailor": (
         "SELECT COUNT(*) FROM jobs WHERE fit_score >= ? "
-        "AND full_description IS NOT NULL "
+        f"AND {HAS_JOB_TEXT} "
         "AND tailored_resume_path IS NULL "
         "AND COALESCE(tailor_attempts, 0) < 5"
     ),

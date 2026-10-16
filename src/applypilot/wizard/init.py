@@ -301,6 +301,31 @@ def _setup_searches() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Resume keywords
+# ---------------------------------------------------------------------------
+
+def _setup_resume_keywords() -> None:
+    """Extract skills/keywords/titles from resume.txt into profile.json (needs an LLM)."""
+    from applypilot.config import get_tier
+    from applypilot.profile_keywords import ensure_profile_keywords
+
+    if get_tier() < 2:
+        console.print("[dim]Resume keywords: skipped (no LLM configured). "
+                      "They are extracted automatically once AI is set up.[/dim]\n")
+        return
+    console.print("[cyan]Extracting skills and keywords from your resume...[/cyan]")
+    kw = ensure_profile_keywords(force=True)
+    if not kw:
+        console.print("[yellow]Could not extract resume keywords. They will be retried on the next scoring run.[/yellow]\n")
+        return
+    n_skills = sum(len(v) for v in kw["skills"].values())
+    console.print(f"[green]Saved {n_skills} skills and {len(kw['keywords'])} keywords to {PROFILE_PATH}[/green]")
+    if kw["job_titles"]:
+        console.print(f"[dim]Suggested job titles: {', '.join(kw['job_titles'])}[/dim]")
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # AI Features
 # ---------------------------------------------------------------------------
 
@@ -432,6 +457,9 @@ def run_wizard() -> None:
     # Step 5: Auto-apply (Claude Code detection)
     _setup_auto_apply()
     console.print()
+
+    # Pull skills, keywords and fitting job titles out of the resume into profile.json
+    _setup_resume_keywords()
 
     # Done — show tier status
     from applypilot.config import get_tier, TIER_LABELS, TIER_COMMANDS

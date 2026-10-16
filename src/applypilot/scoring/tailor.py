@@ -18,6 +18,7 @@ from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.enrichment.summary import job_context
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
@@ -369,12 +370,7 @@ def tailor_resume(
     Returns:
         (tailored_text, report) where report contains validation details.
     """
-    job_text = (
-        f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
-        f"LOCATION: {job.get('location', 'N/A')}\n\n"
-        f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
-    )
+    job_text = job_context(job)
 
     report: dict = {
         "attempts": 0, "validator": None, "judge": None,
@@ -507,7 +503,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
                 f"Location: {job.get('location', 'N/A')}\n"
                 f"Score: {job.get('fit_score', 'N/A')}\n"
                 f"URL: {job['url']}\n\n"
-                f"{job.get('full_description', '')}"
+                f"{job.get('full_description') or job_context(job)}"
             )
             job_path.write_text(job_desc, encoding="utf-8")
 

@@ -19,6 +19,7 @@ from rich.console import Console
 
 from applypilot.config import APP_DIR, DB_PATH
 from applypilot.database import get_connection
+from applypilot.enrichment.summary import parse_summary
 
 console = Console()
 
@@ -40,7 +41,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     ready = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL AND application_url IS NOT NULL"
+        "WHERE (full_description IS NOT NULL OR job_summary IS NOT NULL) AND application_url IS NOT NULL"
     ).fetchone()[0]
     scored = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
@@ -76,7 +77,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
     jobs = conn.execute("""
         SELECT url, title, salary, description, location, site, strategy,
                full_description, application_url, detail_error,
-               fit_score, score_reasoning
+               fit_score, score_reasoning, job_summary
         FROM jobs
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
@@ -159,6 +160,11 @@ def generate_dashboard(output_path: str | None = None) -> str:
         reasoning_lines = reasoning_raw.split("\n")
         keywords = reasoning_lines[0][:120] if reasoning_lines else ""
         reasoning = reasoning_lines[1][:200] if len(reasoning_lines) > 1 else ""
+
+        # Required skills from the job summary, when the score has no keywords
+        if not keywords:
+            summary = parse_summary(j["job_summary"]) or {}
+            keywords = ", ".join(summary.get("required_skills") or [])[:120]
 
         desc_preview = escape(j["full_description"] or "")[:300]
         full_desc_html = escape(j["full_description"] or "").replace("\n", "<br>")

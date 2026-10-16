@@ -11,9 +11,12 @@ import re
 import time
 from datetime import datetime, timezone
 
+from applypilot import config
 from applypilot.config import RESUME_PATH, load_profile
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.database import HAS_JOB_TEXT, get_connection, get_jobs_by_stage
+from applypilot.enrichment.summary import job_context, load_summary_settings, parse_summary, summarize_job
 from applypilot.llm import get_client
+from applypilot.profile_keywords import candidate_skills, ensure_profile_keywords, skill_overlap
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +37,7 @@ IMPORTANT FACTORS:
 - Consider transferable experience (automation, scripting, API work)
 - Factor in the candidate's project experience
 - Be realistic about experience level vs. job requirements (years of experience, seniority)
+- If a SKILL MATCH line is given, use it as a starting point but check the resume yourself (synonyms count)
 
 RESPOND IN EXACTLY THIS FORMAT (no other text):
 SCORE: [1-10]
@@ -70,26 +74,40 @@ def _parse_score_response(response: str) -> dict:
     return {"score": score, "keywords": keywords, "reasoning": reasoning}
 
 
-def score_job(resume_text: str, job: dict) -> dict:
+def _candidate_block(job: dict, skills: list[str]) -> str:
+    """Candidate skill list plus the job's matched/missing required skills."""
+    if not skills:
+        return ""
+    block = f"CANDIDATE SKILLS: {', '.join(skills[:120])}\n"
+    summary = parse_summary(job.get("job_summary"))
+    required = (summary or {}).get("required_skills") or []
+    if required:
+        matched, missing = skill_overlap(required, skills)
+        block += (
+            f"SKILL MATCH: {len(matched)}/{len(required)} required skills matched"
+            f" | matched: {', '.join(matched) or 'none'} | missing: {', '.join(missing) or 'none'}\n"
+        )
+    return block
+
+
+def score_job(resume_text: str, job: dict, skills: list[str] | None = None, settings: dict | None = None) -> dict:
     """Score a single job against the resume.
 
     Args:
         resume_text: The candidate's full resume text.
-        job: Job dict with keys: title, site, location, full_description.
+        job: Job dict with keys: title, site, location, full_description / job_summary.
+        skills: The candidate's skills (profile skills_boundary + resume keywords).
+        settings: job_summary settings (see enrichment.summary).
 
     Returns:
         {"score": int, "keywords": str, "reasoning": str}
     """
-    job_text = (
-        f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
-        f"LOCATION: {job.get('location', 'N/A')}\n\n"
-        f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
-    )
+    job_text = job_context(job, settings)
+    candidate = _candidate_block(job, skills or [])
 
     messages = [
         {"role": "system", "content": SCORE_PROMPT},
-        {"role": "user", "content": f"RESUME:\n{resume_text}\n\n---\n\nJOB POSTING:\n{job_text}"},
+        {"role": "user", "content": f"RESUME:\n{resume_text}\n\n{candidate}\n---\n\nJOB POSTING:\n{job_text}"},
     ]
 
     try:
@@ -99,6 +117,33 @@ def score_job(resume_text: str, job: dict) -> dict:
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
         return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
+
+
+def _min_skill_match() -> int:
+    """`scoring.min_skill_match` from searches.yaml (0 = off)."""
+    try:
+        block = (config.load_search_config() or {}).get("scoring") or {}
+        return max(0, int(block.get("min_skill_match", 0) or 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def _prefilter(job: dict, skills: list[str], min_match: int) -> dict | None:
+    """Score 1 without an LLM call when too few required skills match."""
+    if min_match <= 0 or not skills:
+        return None
+    required = (parse_summary(job.get("job_summary")) or {}).get("required_skills") or []
+    if not required:
+        return None
+    matched, missing = skill_overlap(required, skills)
+    if len(matched) >= min(min_match, len(required)):
+        return None
+    return {
+        "score": 1,
+        "keywords": ", ".join(matched),
+        "reasoning": (f"Skipped without LLM: only {len(matched)}/{len(required)} required skills match "
+                      f"(scoring.min_skill_match={min_match}). Missing: {', '.join(missing[:10])}"),
+    }
 
 
 def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
@@ -115,7 +160,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     conn = get_connection()
 
     if rescore:
-        query = "SELECT * FROM jobs WHERE full_description IS NOT NULL"
+        query = f"SELECT * FROM jobs WHERE {HAS_JOB_TEXT}"
         if limit > 0:
             query += f" LIMIT {limit}"
         jobs = conn.execute(query).fetchall()
@@ -137,8 +182,28 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     errors = 0
     results: list[dict] = []
 
+    # Candidate skills: profile skills_boundary + keywords extracted from resume.txt
+    # (re-extracted automatically when the resume changes)
+    ensure_profile_keywords()
+    try:
+        skills = candidate_skills(load_profile())
+    except FileNotFoundError:
+        skills = []
+    settings = load_summary_settings()
+    min_match = _min_skill_match()
+    prefiltered = 0
+
     for job in jobs:
-        result = score_job(resume_text, job)
+        # Jobs that reached scoring without a summary (e.g. --stream mode) get one now
+        if settings["enabled"] and not job.get("job_summary") and not job.get("summary_error") \
+                and job.get("full_description"):
+            summarize_job(conn, job, settings)
+
+        result = _prefilter(job, skills, min_match)
+        if result:
+            prefiltered += 1
+        else:
+            result = score_job(resume_text, job, skills, settings)
         result["url"] = job["url"]
         completed += 1
 
@@ -163,6 +228,8 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
 
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
+    if prefiltered:
+        log.info("%d jobs scored 1 without an LLM call (too few matching skills)", prefiltered)
 
     # Score distribution
     dist = conn.execute("""

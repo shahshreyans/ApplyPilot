@@ -275,6 +275,32 @@ def _run_one_search(
     return {"new": new, "existing": existing, "errors": 0, "filtered": filtered, "total": before, "label": label}
 
 
+# -- Profile titles as extra queries ------------------------------------------
+
+def _profile_title_queries(search_cfg: dict, queries: list[dict]) -> list[dict]:
+    """Job titles extracted from the resume, as tier-3 queries.
+
+    Enabled with `discovery: {use_profile_titles: true}` in searches.yaml.
+    Titles already in `queries` (case-insensitive) are skipped.
+    """
+    disc = search_cfg.get("discovery")
+    if not isinstance(disc, dict) or not disc.get("use_profile_titles"):
+        return []
+    from applypilot.profile_keywords import ensure_profile_keywords
+
+    kw = ensure_profile_keywords() or {}
+    have = {str(q.get("query", "")).strip().lower() for q in queries}
+    extra = []
+    for title in kw.get("job_titles") or []:
+        if title.strip().lower() not in have:
+            have.add(title.strip().lower())
+            extra.append({"query": title, "tier": 3})
+    if extra:
+        log.info("Adding %d job titles from your resume as queries: %s",
+                 len(extra), ", ".join(q["query"] for q in extra))
+    return extra
+
+
 # -- Single query search -----------------------------------------------------
 
 def search_jobs(
@@ -371,6 +397,8 @@ def _full_crawl(
     locs = search_cfg.get("locations", [])
     defaults = search_cfg.get("defaults", {})
     glassdoor_map = search_cfg.get("glassdoor_location_map", {})
+
+    queries = queries + _profile_title_queries(search_cfg, queries)
 
     if tiers:
         queries = [q for q in queries if q.get("tier") in tiers]
